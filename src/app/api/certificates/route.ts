@@ -59,7 +59,6 @@ export async function POST(request: NextRequest) {
         domain,
         challengeType: challenge_type || 'http',
         dnsProvider: dns_provider,
-        cloudflareApiToken: process.env.CLOUDFLARE_API_TOKEN,
       });
 
       if (result.success) {

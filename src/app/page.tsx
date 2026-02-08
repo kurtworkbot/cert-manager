@@ -367,7 +367,9 @@ function AddCertificateModal({ onClose, onAdded }: {
               >
                 <option value="cloudflare">Cloudflare</option>
                 <option value="route53">AWS Route53</option>
-                <option value="manual">Manual</option>
+                <option value="godaddy">GoDaddy</option>
+                <option value="digitalocean">DigitalOcean</option>
+                <option value="manual">Manual (Add TXT yourself)</option>
               </select>
             </div>
           )}

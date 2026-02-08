@@ -8,6 +8,7 @@ import {
   logHookExecution,
   type Certificate 
 } from './db';
+import { createDnsProvider, ProviderName } from './dns-providers';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 
@@ -23,7 +24,6 @@ interface AcmeConfig {
   domain: string;
   challengeType: 'http' | 'dns';
   dnsProvider?: string;
-  cloudflareApiToken?: string;
 }
 
 let accountKey: Buffer | null = null;
@@ -60,6 +60,11 @@ export async function requestCertificate(config: AcmeConfig): Promise<{
       commonName: config.domain,
     });
 
+    // Get DNS provider if needed
+    const dnsProvider = config.challengeType === 'dns' && config.dnsProvider
+      ? createDnsProvider(config.dnsProvider as ProviderName)
+      : null;
+
     // Request certificate with challenge handling
     const certificate = await client.auto({
       csr,
@@ -69,24 +74,37 @@ export async function requestCertificate(config: AcmeConfig): Promise<{
         if (config.challengeType === 'http') {
           // Save HTTP challenge token to database
           saveChallengeToken(config.domain, challenge.token, keyAuthorization);
-        } else if (config.challengeType === 'dns') {
-          // Handle DNS challenge
-          if (config.dnsProvider === 'cloudflare' && config.cloudflareApiToken) {
-            await createCloudflareDnsRecord(
-              config.domain,
-              keyAuthorization,
-              config.cloudflareApiToken
-            );
-          }
+        } else if (config.challengeType === 'dns' && dnsProvider) {
+          // Calculate TXT record value
+          const txtValue = crypto
+            .createHash('sha256')
+            .update(keyAuthorization)
+            .digest('base64url');
+          
+          await dnsProvider.createRecord({
+            domain: config.domain,
+            recordName: `_acme-challenge.${config.domain}`,
+            recordValue: txtValue,
+          });
+          
+          // Wait for DNS propagation
+          await new Promise(resolve => setTimeout(resolve, 10000));
         }
       },
-      challengeRemoveFn: async (authz, challenge) => {
+      challengeRemoveFn: async (authz, challenge, keyAuthorization) => {
         if (config.challengeType === 'http') {
           deleteChallengeTokens(config.domain);
-        } else if (config.challengeType === 'dns') {
-          if (config.dnsProvider === 'cloudflare' && config.cloudflareApiToken) {
-            await deleteCloudflareDnsRecord(config.domain, config.cloudflareApiToken);
-          }
+        } else if (config.challengeType === 'dns' && dnsProvider) {
+          const txtValue = crypto
+            .createHash('sha256')
+            .update(keyAuthorization)
+            .digest('base64url');
+          
+          await dnsProvider.deleteRecord({
+            domain: config.domain,
+            recordName: `_acme-challenge.${config.domain}`,
+            recordValue: txtValue,
+          });
         }
       },
       challengePriority: config.challengeType === 'dns' ? ['dns-01'] : ['http-01'],
@@ -115,8 +133,6 @@ export async function renewCertificate(certId: number): Promise<{
   success: boolean;
   error?: string;
 }> {
-  const cert = getCertificateByDomain('') as Certificate | undefined;
-  // Get by ID instead
   const { getCertificate } = await import('./db');
   const certificate = getCertificate(certId);
   
@@ -131,7 +147,6 @@ export async function renewCertificate(certId: number): Promise<{
     domain: certificate.domain,
     challengeType: certificate.challenge_type,
     dnsProvider: certificate.dns_provider || undefined,
-    cloudflareApiToken: process.env.CLOUDFLARE_API_TOKEN,
   });
 
   if (result.success) {
@@ -157,81 +172,6 @@ export async function renewCertificate(certId: number): Promise<{
 
   updateCertificate(certId, { status: 'error' });
   return { success: false, error: result.error };
-}
-
-async function createCloudflareDnsRecord(
-  domain: string,
-  keyAuthorization: string,
-  apiToken: string
-): Promise<void> {
-  const txtValue = crypto
-    .createHash('sha256')
-    .update(keyAuthorization)
-    .digest('base64url');
-
-  const zoneId = await getCloudflareZoneId(domain, apiToken);
-  
-  await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      type: 'TXT',
-      name: `_acme-challenge.${domain}`,
-      content: txtValue,
-      ttl: 120,
-    }),
-  });
-}
-
-async function deleteCloudflareDnsRecord(
-  domain: string,
-  apiToken: string
-): Promise<void> {
-  const zoneId = await getCloudflareZoneId(domain, apiToken);
-  
-  // Find and delete the ACME challenge record
-  const response = await fetch(
-    `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?name=_acme-challenge.${domain}&type=TXT`,
-    {
-      headers: { 'Authorization': `Bearer ${apiToken}` },
-    }
-  );
-  
-  const data = await response.json() as { result: { id: string }[] };
-  
-  for (const record of data.result || []) {
-    await fetch(
-      `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records/${record.id}`,
-      {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${apiToken}` },
-      }
-    );
-  }
-}
-
-async function getCloudflareZoneId(domain: string, apiToken: string): Promise<string> {
-  // Extract root domain (e.g., example.com from sub.example.com)
-  const parts = domain.split('.');
-  const rootDomain = parts.slice(-2).join('.');
-  
-  const response = await fetch(
-    `https://api.cloudflare.com/client/v4/zones?name=${rootDomain}`,
-    {
-      headers: { 'Authorization': `Bearer ${apiToken}` },
-    }
-  );
-  
-  const data = await response.json() as { result: { id: string }[] };
-  
-  if (!data.result || data.result.length === 0) {
-    throw new Error(`Zone not found for domain: ${rootDomain}`);
-  }
-  
-  return data.result[0].id;
 }
 
 async function executeHook(
