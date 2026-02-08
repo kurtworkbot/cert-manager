@@ -33,7 +33,7 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { domain, challenge_type, dns_provider, auto_renew, hook_script, issue_now } = body;
+    const { domain, challenge_type, dns_provider, acme_provider, auto_renew, hook_script, issue_now } = body;
 
     if (!domain) {
       return NextResponse.json(
@@ -47,6 +47,7 @@ export async function POST(request: NextRequest) {
       domain,
       challenge_type: challenge_type || 'http',
       dns_provider,
+      acme_provider: acme_provider || 'letsencrypt',
       auto_renew,
       hook_script,
     });
@@ -59,6 +60,7 @@ export async function POST(request: NextRequest) {
         domain,
         challengeType: challenge_type || 'http',
         dnsProvider: dns_provider,
+        acmeProvider: acme_provider || 'letsencrypt',
       });
 
       if (result.success) {

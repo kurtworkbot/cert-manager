@@ -288,6 +288,7 @@ function AddCertificateModal({ onClose, onAdded }: {
   const [domain, setDomain] = useState('');
   const [challengeType, setChallengeType] = useState<'http' | 'dns'>('http');
   const [dnsProvider, setDnsProvider] = useState('cloudflare');
+  const [acmeProvider, setAcmeProvider] = useState('letsencrypt');
   const [hookScript, setHookScript] = useState('');
   const [autoRenew, setAutoRenew] = useState(true);
   const [issueNow, setIssueNow] = useState(false);
@@ -305,6 +306,7 @@ function AddCertificateModal({ onClose, onAdded }: {
           domain,
           challenge_type: challengeType,
           dns_provider: challengeType === 'dns' ? dnsProvider : null,
+          acme_provider: acmeProvider,
           auto_renew: autoRenew,
           hook_script: hookScript || null,
           issue_now: issueNow,
@@ -373,6 +375,21 @@ function AddCertificateModal({ onClose, onAdded }: {
               </select>
             </div>
           )}
+
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1">Certificate Authority</label>
+            <select
+              value={acmeProvider}
+              onChange={(e) => setAcmeProvider(e.target.value)}
+              className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            >
+              <option value="letsencrypt">Let's Encrypt (90 days)</option>
+              <option value="zerossl">ZeroSSL (90 days, requires EAB)</option>
+              <option value="buypass">Buypass Go (180 days)</option>
+              <option value="google">Google Trust Services (90 days, requires EAB)</option>
+              <option value="sslcom">SSL.com (90 days, requires EAB)</option>
+            </select>
+          </div>
 
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-1">Hook Script (optional)</label>

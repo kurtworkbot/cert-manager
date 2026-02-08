@@ -1,7 +1,6 @@
 import * as acme from 'acme-client';
 import * as crypto from 'crypto';
 import { 
-  getCertificateByDomain, 
   updateCertificate, 
   saveChallengeToken, 
   deleteChallengeTokens,
@@ -9,29 +8,35 @@ import {
   type Certificate 
 } from './db';
 import { createDnsProvider, ProviderName } from './dns-providers';
+import { 
+  getAcmeDirectoryUrl, 
+  getAcmeProvider, 
+  getEabCredentials,
+  ACME_PROVIDERS 
+} from './acme-providers';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
-
-// Use Let's Encrypt staging for testing, production for real certs
-const ACME_DIRECTORY = process.env.ACME_PRODUCTION === 'true'
-  ? acme.directory.letsencrypt.production
-  : acme.directory.letsencrypt.staging;
 
 interface AcmeConfig {
   email: string;
   domain: string;
   challengeType: 'http' | 'dns';
   dnsProvider?: string;
+  acmeProvider?: string;
 }
 
-let accountKey: Buffer | null = null;
+// Store account keys per provider
+const accountKeys: Map<string, Buffer> = new Map();
 
-async function getOrCreateAccountKey(): Promise<Buffer> {
-  if (accountKey) return accountKey;
-  accountKey = await acme.crypto.createPrivateKey();
-  return accountKey;
+async function getOrCreateAccountKey(providerName: string): Promise<Buffer> {
+  if (accountKeys.has(providerName)) {
+    return accountKeys.get(providerName)!;
+  }
+  const key = await acme.crypto.createPrivateKey();
+  accountKeys.set(providerName, key);
+  return key;
 }
 
 export async function requestCertificate(config: AcmeConfig): Promise<{
@@ -41,19 +46,49 @@ export async function requestCertificate(config: AcmeConfig): Promise<{
   expiresAt?: string;
   error?: string;
 }> {
+  const providerName = config.acmeProvider || 'letsencrypt';
+  const provider = getAcmeProvider(providerName);
+  
+  if (!provider) {
+    return { success: false, error: `Unknown ACME provider: ${providerName}` };
+  }
+
   try {
-    const accountKey = await getOrCreateAccountKey();
+    const useStaging = process.env.ACME_PRODUCTION !== 'true';
+    const directoryUrl = getAcmeDirectoryUrl(providerName, useStaging);
+    const accountKey = await getOrCreateAccountKey(providerName);
     
     const client = new acme.Client({
-      directoryUrl: ACME_DIRECTORY,
+      directoryUrl,
       accountKey,
     });
 
-    // Create account
-    await client.createAccount({
-      termsOfServiceAgreed: true,
-      contact: [`mailto:${config.email}`],
-    });
+    // Handle External Account Binding (EAB) for providers that require it
+    if (provider.requiresEab) {
+      const eab = getEabCredentials(providerName);
+      if (!eab) {
+        return { 
+          success: false, 
+          error: `${provider.label} requires EAB credentials. Set ${provider.eabKeyIdEnvVar} and ${provider.eabMacKeyEnvVar}` 
+        };
+      }
+      
+      // Create account with EAB
+      await client.createAccount({
+        termsOfServiceAgreed: true,
+        contact: [`mailto:${config.email}`],
+        externalAccountBinding: {
+          kid: eab.kid,
+          hmacKey: eab.hmacKey,
+        },
+      });
+    } else {
+      // Create account without EAB
+      await client.createAccount({
+        termsOfServiceAgreed: true,
+        contact: [`mailto:${config.email}`],
+      });
+    }
 
     // Create CSR
     const [key, csr] = await acme.crypto.createCsr({
@@ -72,10 +107,8 @@ export async function requestCertificate(config: AcmeConfig): Promise<{
       termsOfServiceAgreed: true,
       challengeCreateFn: async (authz, challenge, keyAuthorization) => {
         if (config.challengeType === 'http') {
-          // Save HTTP challenge token to database
           saveChallengeToken(config.domain, challenge.token, keyAuthorization);
         } else if (config.challengeType === 'dns' && dnsProvider) {
-          // Calculate TXT record value
           const txtValue = crypto
             .createHash('sha256')
             .update(keyAuthorization)
@@ -110,9 +143,9 @@ export async function requestCertificate(config: AcmeConfig): Promise<{
       challengePriority: config.challengeType === 'dns' ? ['dns-01'] : ['http-01'],
     });
 
-    // Calculate expiry (Let's Encrypt certs are valid for 90 days)
+    // Calculate expiry based on provider's validity period
     const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 90);
+    expiresAt.setDate(expiresAt.getDate() + provider.certValidityDays);
 
     return {
       success: true,
@@ -147,6 +180,7 @@ export async function renewCertificate(certId: number): Promise<{
     domain: certificate.domain,
     challengeType: certificate.challenge_type,
     dnsProvider: certificate.dns_provider || undefined,
+    acmeProvider: certificate.acme_provider || 'letsencrypt',
   });
 
   if (result.success) {

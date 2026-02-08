@@ -24,6 +24,7 @@ db.exec(`
     private_key TEXT,
     challenge_type TEXT DEFAULT 'http',
     dns_provider TEXT,
+    acme_provider TEXT DEFAULT 'letsencrypt',
     auto_renew INTEGER DEFAULT 1,
     hook_script TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -81,6 +82,7 @@ export interface Certificate {
   private_key: string | null;
   challenge_type: 'http' | 'dns';
   dns_provider: string | null;
+  acme_provider: string;
   auto_renew: boolean;
   hook_script: string | null;
   created_at: string;
@@ -114,17 +116,19 @@ export function createCertificate(data: {
   domain: string;
   challenge_type?: 'http' | 'dns';
   dns_provider?: string;
+  acme_provider?: string;
   auto_renew?: boolean;
   hook_script?: string;
 }): Certificate {
   const stmt = db.prepare(`
-    INSERT INTO certificates (domain, challenge_type, dns_provider, auto_renew, hook_script)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO certificates (domain, challenge_type, dns_provider, acme_provider, auto_renew, hook_script)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
   const result = stmt.run(
     data.domain,
     data.challenge_type || 'http',
     data.dns_provider || null,
+    data.acme_provider || 'letsencrypt',
     data.auto_renew !== false ? 1 : 0,
     data.hook_script || null
   );
@@ -142,6 +146,7 @@ export function updateCertificate(id: number, data: Partial<Certificate>): Certi
   if (data.private_key !== undefined) { updates.push('private_key = ?'); values.push(data.private_key); }
   if (data.challenge_type !== undefined) { updates.push('challenge_type = ?'); values.push(data.challenge_type); }
   if (data.dns_provider !== undefined) { updates.push('dns_provider = ?'); values.push(data.dns_provider); }
+  if (data.acme_provider !== undefined) { updates.push('acme_provider = ?'); values.push(data.acme_provider); }
   if (data.auto_renew !== undefined) { updates.push('auto_renew = ?'); values.push(data.auto_renew ? 1 : 0); }
   if (data.hook_script !== undefined) { updates.push('hook_script = ?'); values.push(data.hook_script); }
 
