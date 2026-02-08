@@ -46,6 +46,13 @@ db.exec(`
     output TEXT,
     FOREIGN KEY (certificate_id) REFERENCES certificates(id)
   );
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_token TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 export interface Certificate {
@@ -159,6 +166,60 @@ export function logHookExecution(certificateId: number, success: boolean, output
     VALUES (?, ?, ?)
   `);
   stmt.run(certificateId, success ? 1 : 0, output);
+}
+
+export function getHookLogs(certificateId: number): Array<{
+  id: number;
+  certificate_id: number;
+  executed_at: string;
+  success: boolean;
+  output: string;
+}> {
+  const stmt = db.prepare('SELECT * FROM hook_logs WHERE certificate_id = ? ORDER BY executed_at DESC');
+  return stmt.all(certificateId) as Array<{
+    id: number;
+    certificate_id: number;
+    executed_at: string;
+    success: boolean;
+    output: string;
+  }>;
+}
+
+// Session Management
+export interface Session {
+  id: number;
+  session_token: string;
+  expires_at: string;
+  created_at: string;
+}
+
+export function createSession(token: string, expiresAt: Date): Session {
+  const stmt = db.prepare(`
+    INSERT INTO sessions (session_token, expires_at)
+    VALUES (?, ?)
+  `);
+  const result = stmt.run(token, expiresAt.toISOString());
+  return getSessionById(result.lastInsertRowid as number)!;
+}
+
+export function getSessionById(id: number): Session | undefined {
+  const stmt = db.prepare('SELECT * FROM sessions WHERE id = ?');
+  return stmt.get(id) as Session | undefined;
+}
+
+export function getSessionByToken(token: string): Session | undefined {
+  const stmt = db.prepare('SELECT * FROM sessions WHERE session_token = ? AND expires_at > datetime("now")');
+  return stmt.get(token) as Session | undefined;
+}
+
+export function deleteSession(token: string): void {
+  const stmt = db.prepare('DELETE FROM sessions WHERE session_token = ?');
+  stmt.run(token);
+}
+
+export function cleanExpiredSessions(): void {
+  const stmt = db.prepare('DELETE FROM sessions WHERE expires_at <= datetime("now")');
+  stmt.run();
 }
 
 export default db;

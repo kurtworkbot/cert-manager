@@ -1,10 +1,11 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { 
   Shield, ShieldCheck, ShieldAlert, ShieldX, 
   RefreshCw, Plus, Trash2, Settings, Clock,
-  Globe, Key, AlertTriangle
+  Globe, Key, AlertTriangle, LogOut
 } from 'lucide-react';
 
 interface Certificate {
@@ -22,6 +23,7 @@ interface Certificate {
 }
 
 export default function Home() {
+  const router = useRouter();
   const [certificates, setCertificates] = useState<Certificate[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -30,6 +32,11 @@ export default function Home() {
   useEffect(() => {
     fetchCertificates();
   }, []);
+
+  async function handleLogout() {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    router.push('/login');
+  }
 
   async function fetchCertificates() {
     try {
@@ -115,13 +122,22 @@ export default function Home() {
             <ShieldCheck className="w-8 h-8 text-emerald-500" />
             <h1 className="text-2xl font-bold text-white">CertManager</h1>
           </div>
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition-colors"
-          >
-            <Plus className="w-5 h-5" />
-            Add Certificate
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition-colors"
+            >
+              <Plus className="w-5 h-5" />
+              Add Certificate
+            </button>
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-2 px-3 py-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"
+              title="Logout"
+            >
+              <LogOut className="w-5 h-5" />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -172,7 +188,8 @@ export default function Home() {
               {certificates.map((cert) => (
                 <div
                   key={cert.id}
-                  className="px-6 py-4 flex items-center justify-between hover:bg-slate-700/30 transition-colors"
+                  className="px-6 py-4 flex items-center justify-between hover:bg-slate-700/30 transition-colors cursor-pointer"
+                  onClick={() => router.push(`/certificates/${cert.id}`)}
                 >
                   <div className="flex items-center gap-4">
                     {getStatusIcon(cert.computed_status)}
@@ -200,7 +217,7 @@ export default function Home() {
                     </div>
                   </div>
                   
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                     <button
                       onClick={() => handleRenew(cert.id)}
                       disabled={renewingId === cert.id}
