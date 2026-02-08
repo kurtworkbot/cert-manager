@@ -158,6 +158,10 @@ export async function renewCertificate(certId: number): Promise<{
       expires_at: result.expiresAt,
     });
 
+    // Clear notification records after successful renewal
+    const { clearNotificationsForCertificate } = await import('./db');
+    clearNotificationsForCertificate(certId);
+
     // Execute hook if configured
     if (certificate.hook_script) {
       await executeHook(certId, certificate.hook_script, {

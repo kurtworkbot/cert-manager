@@ -53,6 +53,22 @@ db.exec(`
     expires_at TEXT NOT NULL,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    certificate_id INTEGER,
+    type TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    sent_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (certificate_id) REFERENCES certificates(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS notification_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel TEXT NOT NULL UNIQUE,
+    enabled INTEGER DEFAULT 1,
+    config TEXT
+  );
 `);
 
 export interface Certificate {
@@ -220,6 +236,80 @@ export function deleteSession(token: string): void {
 export function cleanExpiredSessions(): void {
   const stmt = db.prepare('DELETE FROM sessions WHERE expires_at <= datetime("now")');
   stmt.run();
+}
+
+// Notification Management
+export interface NotificationSetting {
+  id: number;
+  channel: string;
+  enabled: boolean;
+  config: string | null;
+}
+
+export interface Notification {
+  id: number;
+  certificate_id: number;
+  type: string;
+  channel: string;
+  sent_at: string;
+}
+
+export function getNotificationSettings(): NotificationSetting[] {
+  const stmt = db.prepare('SELECT * FROM notification_settings');
+  return stmt.all() as NotificationSetting[];
+}
+
+export function getNotificationSetting(channel: string): NotificationSetting | undefined {
+  const stmt = db.prepare('SELECT * FROM notification_settings WHERE channel = ?');
+  return stmt.get(channel) as NotificationSetting | undefined;
+}
+
+export function upsertNotificationSetting(channel: string, enabled: boolean, config: string | null): void {
+  const stmt = db.prepare(`
+    INSERT INTO notification_settings (channel, enabled, config)
+    VALUES (?, ?, ?)
+    ON CONFLICT(channel) DO UPDATE SET enabled = ?, config = ?
+  `);
+  stmt.run(channel, enabled ? 1 : 0, config, enabled ? 1 : 0, config);
+}
+
+export function hasNotificationBeenSent(certificateId: number, type: string): boolean {
+  const stmt = db.prepare('SELECT 1 FROM notifications WHERE certificate_id = ? AND type = ?');
+  return !!stmt.get(certificateId, type);
+}
+
+export function recordNotification(certificateId: number, type: string, channel: string): void {
+  const stmt = db.prepare(`
+    INSERT INTO notifications (certificate_id, type, channel)
+    VALUES (?, ?, ?)
+  `);
+  stmt.run(certificateId, type, channel);
+}
+
+export function clearNotificationsForCertificate(certificateId: number): void {
+  const stmt = db.prepare('DELETE FROM notifications WHERE certificate_id = ?');
+  stmt.run(certificateId);
+}
+
+export function getCertificatesForAutoRenew(): Certificate[] {
+  const stmt = db.prepare(`
+    SELECT * FROM certificates 
+    WHERE auto_renew = 1 
+    AND expires_at IS NOT NULL 
+    AND julianday(expires_at) - julianday('now') < 30
+    AND julianday(expires_at) - julianday('now') > 0
+  `);
+  return stmt.all() as Certificate[];
+}
+
+export function getCertificatesExpiringSoon(daysThreshold: number): Certificate[] {
+  const stmt = db.prepare(`
+    SELECT * FROM certificates 
+    WHERE expires_at IS NOT NULL 
+    AND julianday(expires_at) - julianday('now') <= ?
+    AND julianday(expires_at) - julianday('now') > 0
+  `);
+  return stmt.all(daysThreshold) as Certificate[];
 }
 
 export default db;
