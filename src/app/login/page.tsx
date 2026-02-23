@@ -28,6 +28,15 @@ export default function LoginPage() {
         throw new Error(data.error?.message || 'Login failed');
       }
 
+      // Store token
+      const cookies = res.headers.get('set-cookie');
+      if (cookies) {
+        const accessTokenMatch = cookies.match(/access_token=([^;]+)/);
+        if (accessTokenMatch) {
+          localStorage.setItem('access_token', accessTokenMatch[1]);
+        }
+      }
+
       router.push('/dashboard');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');

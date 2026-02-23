@@ -32,16 +32,30 @@ export const providers = sqliteTable('providers', {
   config: text('config', { mode: 'json' }).notNull(),
 });
 
+// Domain management (separate from certificates)
+export const domains = sqliteTable('domains', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(), // domain name like example.com
+  userId: text('user_id').references(() => users.id).notNull(),
+  description: text('description'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
 export const certificates = sqliteTable('certificates', {
   id: text('id').primaryKey(),
-  domain: text('domain').notNull(),
+  domainId: text('domain_id').references(() => domains.id).notNull(),
+  domain: text('domain').notNull(), // denormalized for convenience
   providerId: text('provider_id').references(() => providers.id).notNull(),
-  userId: text('user_id').references(() => users.id), // Owner of the certificate
+  userId: text('user_id').references(() => users.id),
   caProvider: text('ca_provider', { enum: ['letsencrypt', 'zerossl'] }).notNull(),
-  status: text('status', { enum: ['active', 'expired', 'error'] }).notNull(),
-  expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+  challengeType: text('challenge_type', { enum: ['http-01', 'dns-01'] }).default('http-01').notNull(),
+  status: text('status', { enum: ['pending', 'active', 'expired', 'error'] }).notNull(),
+  privateKey: text('private_key'),
+  fullChain: text('full_chain'), // cert + intermediate
+  expiresAt: integer('expires_at', { mode: 'timestamp' }),
   lastRenewed: integer('last_renewed', { mode: 'timestamp' }),
-  fingerprint: text('fingerprint'), // SHA256 fingerprint for drift detection
+  fingerprint: text('fingerprint'),
 });
 
 export const auditLogs = sqliteTable('audit_logs', {
@@ -67,6 +81,7 @@ export const acmeAccounts = sqliteTable('acme_accounts', {
 });
 
 export type Provider = typeof providers.$inferSelect;
+export type Domain = typeof domains.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Certificate = typeof certificates.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
