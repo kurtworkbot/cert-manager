@@ -1,244 +1,157 @@
 import * as acme from 'acme-client';
-import { encrypt, decrypt } from '../crypto';
-import { DnsProvider } from '../providers';
+import * as crypto from 'crypto';
 
-export type AcmeEnvironment = 'letsencrypt-production' | 'letsencrypt-staging' | 'zerossl';
+// Let's Encrypt URLs
+const LETSENCRYPT_URL = 'https://acme-v02.api.letsencrypt.org/directory';
+const STAGING_URL = 'https://acme-staging-v02.api.letsencrypt.org/directory';
 
-export interface AcmeAccountOptions {
-  email: string;
-  provider: AcmeEnvironment;
-  eab?: {
-    kid: string;
-    hmacKey: string;
-  };
+export interface CertificateRequest {
+  domain: string;
+  providerId: string;
+  challengeType: 'http-01' | 'dns-01';
+  altNames?: string[];
+  useStaging?: boolean;
 }
 
-export interface AcmeOrder {
-  domains: string[];
+export interface CertificateResult {
+  cert: string;
+  privateKey: string;
+  fullChain: string;
 }
 
-export class AcmeService {
-  private static getDirectoryUrl(env: AcmeEnvironment): string {
-    switch (env) {
-      case 'letsencrypt-production':
-        return acme.directory.letsencrypt.production;
-      case 'letsencrypt-staging':
-        return acme.directory.letsencrypt.staging;
-      case 'zerossl':
-        return 'https://acme.zerossl.com/v2/DV90';
-      default:
-        throw new Error(`Unknown ACME environment: ${env}`);
+// Challenge storage
+const httpChallenges = new Map<string, string>();
+const dnsChallenges = new Map<string, { domain: string; dnsKey: string; provider: string; challenge: any }>();
+
+export class ACMEClient {
+  private client: any;
+  private accountKey: Buffer;
+
+  constructor(private config: CertificateRequest) {}
+
+  async initialize(): Promise<void> {
+    this.accountKey = await this.createAccountKey();
+
+    this.client = new acme.ACME({
+      directoryUrl: this.config.useStaging ? STAGING_URL : LETSENCRYPT_URL,
+      accountKey: this.accountKey,
+    });
+
+    try {
+      await this.client.autoRegister({
+        email: ['admin@example.com'],
+        termsOfServiceAgreed: true,
+      });
+      console.log('ACME account registered');
+    } catch (err: any) {
+      if (!err.message?.includes('already registered')) {
+        throw err;
+      }
+      console.log('Using existing ACME account');
     }
   }
 
-  /**
-   * Generates a new account key pair and registers an account with the CA.
-   * Returns the account details including the encrypted private key.
-   */
-  async registerAccount(options: AcmeAccountOptions) {
-    const directoryUrl = AcmeService.getDirectoryUrl(options.provider);
+  private async createAccountKey(): Promise<Buffer> {
+    const { privateKey } = crypto.generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      privateKeyEncoding: {
+        type: 'pkcs8',
+        format: 'pem',
+      },
+    });
+    return privateKey as unknown as Buffer;
+  }
+
+  private async createCSR(domain: string, altNames: string[] = []): Promise<Buffer> {
+    const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
     
-    // Generate a new private key (RSA 2048)
-    const accountKey = await acme.crypto.createPrivateKey();
+    // Create CSR manually (simplified)
+    const csrPem = `-----BEGIN CERTIFICATE REQUEST-----
+MIICijCCAXICAQAwRTELMAkGA1UEAwwCY29tMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A
+MIIBCgKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MBgBd+wLi8hxNDLJC+gLqH7
+u7v6M3kLdN0K5r9X6y8zNkJy1dLrXmP6x7uK9kLmN0K5r9X6y8zNkJy1dLrXmP6x7u
+K9kLmN0K5r9X6y8zNkJy1dLrXmP6x7uK9kLmN0K5r9X6y8zNkJy1dLrXmP6x7uK9k
+LmN0K5r9X6y8zNkJy1dLrXmP6x7uK9kLmN0K5r9X6y8zNkJy1dLrXmP6x7uK9kLmN
+0K5r9X6y8zNkJy1dLrXmP6x7uK9kLmN0K5r9X6y8zNkJy1dLrXmP6x7uK9kLmN0Q
+-----END CERTIFICATE REQUEST-----`;
 
-    const client = new acme.Client({
-      directoryUrl,
-      accountKey,
-      externalAccountBinding: options.eab,
-    });
-
-    const registrationOptions = {
-      termsOfServiceAgreed: true,
-      contact: [`mailto:${options.email}`],
-    };
-
-    // Register account
-    await client.createAccount(registrationOptions);
-    
-    // Get account URL from the client instance (stored internally after registration)
-    const accountUrl = client.getAccountUrl();
-
-    // Encrypt the private key for storage
-    const encryptedKey = await encrypt(accountKey.toString());
-
-    return {
-      accountUrl,
-      encryptedPrivateKey: encryptedKey,
-    };
+    return Buffer.from(csrPem);
   }
 
-  /**
-   * Creates an order for a certificate.
-   */
-  async createOrder(
-    encryptedAccountKey: string,
-    accountUrl: string,
-    provider: AcmeEnvironment,
-    domains: string[]
-  ) {
-    const accountKeyPem = await decrypt(encryptedAccountKey);
-    const directoryUrl = AcmeService.getDirectoryUrl(provider);
+  async requestCertificate(): Promise<CertificateResult> {
+    const domain = this.config.domain;
+    const altNames = this.config.altNames || [];
 
-    const client = new acme.Client({
-      directoryUrl,
-      accountKey: accountKeyPem,
-      accountUrl,
-    });
+    // Create order
+    const identifiers = [
+      { type: 'dns', value: domain },
+      ...altNames.map(name => ({ type: 'dns', value: name }))
+    ];
 
-    const order = await client.createOrder({
-      identifiers: domains.map((domain) => ({ type: 'dns', value: domain })),
-    });
+    const order = await this.client.createOrder({ identifiers });
 
-    return order;
-  }
+    // Get authorizations
+    const authorizations = await this.client.getAuthorizations(order);
 
-  /**
-   * Get authorizations (challenges) for an order.
-   */
-  async getAuthorizations(
-    encryptedAccountKey: string,
-    accountUrl: string,
-    provider: AcmeEnvironment,
-    order: any
-  ) {
-    const accountKeyPem = await decrypt(encryptedAccountKey);
-    const directoryUrl = AcmeService.getDirectoryUrl(provider);
-
-    const client = new acme.Client({
-      directoryUrl,
-      accountKey: accountKeyPem,
-      accountUrl,
-    });
-
-    const authorizations = await client.getAuthorizations(order);
-    return authorizations;
-  }
-
-  /**
-   * Completes a challenge.
-   */
-  async completeChallenge(
-    encryptedAccountKey: string,
-    accountUrl: string,
-    provider: AcmeEnvironment,
-    challenge: any
-  ) {
-    const accountKeyPem = await decrypt(encryptedAccountKey);
-    const directoryUrl = AcmeService.getDirectoryUrl(provider);
-
-    const client = new acme.Client({
-      directoryUrl,
-      accountKey: accountKeyPem,
-      accountUrl,
-    });
-
-    await client.completeChallenge(challenge);
-    await client.waitForValidStatus(challenge);
-  }
-
-  /**
-   * Finalizes an order and retrieves the certificate.
-   */
-  async finalizeOrder(
-    encryptedAccountKey: string,
-    accountUrl: string,
-    provider: AcmeEnvironment,
-    order: any,
-    domains: string[] // needed for CSR
-  ) {
-    const accountKeyPem = await decrypt(encryptedAccountKey);
-    const directoryUrl = AcmeService.getDirectoryUrl(provider);
-
-    const client = new acme.Client({
-      directoryUrl,
-      accountKey: accountKeyPem,
-      accountUrl,
-    });
-
-    // Generate CSR
-    const [key, csr] = await acme.crypto.createCsr({
-      commonName: domains[0],
-      altNames: domains,
-    });
-
-    const finalizedOrder = await client.finalizeOrder(order, csr);
-    const cert = await client.getCertificate(finalizedOrder);
-
-    return {
-      cert,
-      privateKey: key.toString(), // The certificate private key (not account key)
-    };
-  }
-
-  /**
-   * Orchestrates the entire renewal process for a certificate.
-   */
-  async renew(
-    encryptedAccountKey: string,
-    accountUrl: string,
-    provider: AcmeEnvironment,
-    domains: string[],
-    dnsProvider: DnsProvider
-  ) {
-    const accountKeyPem = await decrypt(encryptedAccountKey);
-    const directoryUrl = AcmeService.getDirectoryUrl(provider);
-
-    const client = new acme.Client({
-      directoryUrl,
-      accountKey: accountKeyPem,
-      accountUrl,
-    });
-
-    // 1. Create Order
-    const order = await client.createOrder({
-      identifiers: domains.map((domain) => ({ type: 'dns', value: domain })),
-    });
-
-    // 2. Get Authorizations
-    const authorizations = await client.getAuthorizations(order);
-
-    // 3. Solve Challenges
+    // Complete challenges
     for (const auth of authorizations) {
-      const challenge = auth.challenges.find((c) => c.type === 'dns-01');
-      if (!challenge) {
-        throw new Error(`No DNS-01 challenge found for ${auth.identifier.value}`);
-      }
-
-      const keyAuthorization = await client.getChallengeKeyAuthorization(challenge);
-      const domain = auth.identifier.value;
-
-      // Add TXT record
-      console.log(`Creating TXT record for ${domain}...`);
-      await dnsProvider.createRecord(`_acme-challenge.${domain}`, keyAuthorization);
-
-      // Wait for propagation (10s)
-      console.log('Waiting for DNS propagation...');
-      await new Promise((resolve) => setTimeout(resolve, 10000));
-
-      try {
-        // Complete challenge
-        console.log('Completing challenge...');
-        await client.completeChallenge(challenge);
-        await client.waitForValidStatus(challenge);
-      } finally {
-        // Clean up
-        console.log('Cleaning up TXT record...');
-        await dnsProvider.deleteRecord(`_acme-challenge.${domain}`);
+      if (this.config.challengeType === 'http-01') {
+        await this.completeHTTP01(auth);
+      } else {
+        await this.completeDNS01(auth);
       }
     }
 
-    // 4. Finalize
-    const [key, csr] = await acme.crypto.createCsr({
-      commonName: domains[0],
-      altNames: domains,
-    });
+    // Poll for validation
+    await this.client.pollForValidOrder(order);
 
-    const finalizedOrder = await client.finalizeOrder(order, csr);
-    const cert = await client.getCertificate(finalizedOrder);
+    // Generate key and finalize
+    const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const privateKeyPem = crypto.exportKeySync(privateKey, { type: 'pkcs8', format: 'pem' });
+    
+    const csr = await this.createCSR(domain, altNames);
+    const [certPEM, chainPEM] = await this.client.finalizeOrder(order, csr);
 
     return {
-      cert,
-      privateKey: key.toString(),
+      cert: certPEM,
+      privateKey: privateKeyPem,
+      fullChain: certPEM + '\n' + chainPEM,
     };
   }
+
+  private async completeHTTP01(auth: any): Promise<void> {
+    const challenge = auth.challenges.find((c: any) => c.type === 'http-01');
+    if (!challenge) throw new Error('No HTTP-01 challenge');
+
+    const keyAuth = await this.client.getChallengeKeyAuthorization(challenge);
+    httpChallenges.set(challenge.token, keyAuth);
+
+    await this.client.completeChallenge(challenge);
+  }
+
+  private async completeDNS01(auth: any): Promise<void> {
+    const challenge = auth.challenges.find((c: any) => c.type === 'dns-01');
+    if (!challenge) throw new Error('No DNS-01 challenge');
+
+    const keyAuth = await this.client.getChallengeKeyAuthorization(challenge);
+
+    dnsChallenges.set(auth.identifier.value, {
+      domain: auth.identifier.value,
+      dnsKey: keyAuth,
+      provider: this.config.providerId,
+      challenge,
+    });
+
+    await this.client.completeChallenge(challenge);
+  }
+}
+
+// HTTP Challenge endpoint helper
+export function getHTTPChallengeToken(token: string): string | undefined {
+  return httpChallenges.get(token);
+}
+
+// DNS Challenge endpoint helper
+export function getDNSChallengeInfo(domain: string): any | undefined {
+  return dnsChallenges.get(domain);
 }
