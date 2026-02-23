@@ -1,0 +1,6 @@
+{
+  "hooks": {
+    "Stop": [{"type": "command", "command": ".claude/hooks/notify-agi.sh", "timeout": 10}],
+    "SessionEnd": [{"type": "command", "command": ".claude/hooks/notify-agi.sh", "timeout": 10}]
+  }
+}
