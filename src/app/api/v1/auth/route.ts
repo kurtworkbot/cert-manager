@@ -33,6 +33,7 @@ export async function POST(req: NextRequest) {
 
       const response = NextResponse.json({
         user: result.user,
+        accessToken: result.tokens.accessToken,
       });
 
       // Set cookies

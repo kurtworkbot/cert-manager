@@ -29,12 +29,8 @@ export default function LoginPage() {
       }
 
       // Store token
-      const cookies = res.headers.get('set-cookie');
-      if (cookies) {
-        const accessTokenMatch = cookies.match(/access_token=([^;]+)/);
-        if (accessTokenMatch) {
-          localStorage.setItem('access_token', accessTokenMatch[1]);
-        }
+      if (data.accessToken) {
+        localStorage.setItem('access_token', data.accessToken);
       }
 
       router.push('/dashboard');

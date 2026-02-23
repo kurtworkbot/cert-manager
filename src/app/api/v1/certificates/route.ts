@@ -1,14 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { certificates, userAuditLogs } from '@/db/schema';
+import { certificates, domains, providers, userAuditLogs } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { verifyAccessToken } from '@/lib/auth';
-import { validateBody, createCertificateSchema, uuidSchema, paginationSchema, validateQuery } from '@/lib/validation';
 import { errorHandler } from '@/middleware/error-handler';
 import { standardRateLimiter } from '@/middleware/rate-limiter';
 import { v4 as uuidv4 } from 'uuid';
 
-// GET /api/v1/certificates - List certificates (user's own only)
+// Certificate request validation schema
+const requestCertSchema = {
+  parse: (body: any) => {
+    const { domainId, providerId, caProvider, challengeType } = body;
+    if (!domainId) throw new Error('domainId is required');
+    if (!providerId) throw new Error('providerId is required');
+    if (!caProvider) throw new Error('caProvider is required');
+    const validCA = ['letsencrypt', 'zerossl'];
+    const validChallenge = ['http-01', 'dns-01'];
+    if (!validCA.includes(caProvider)) throw new Error('Invalid caProvider');
+    if (challengeType && !validChallenge.includes(challengeType)) throw new Error('Invalid challengeType');
+    return { domainId, providerId, caProvider, challengeType: challengeType || 'http-01' };
+  }
+};
+
+// GET /api/v1/certificates - List certificates
 export async function GET(req: NextRequest) {
   try {
     const rateLimit = standardRateLimiter(req);
@@ -21,22 +35,18 @@ export async function GET(req: NextRequest) {
     }
 
     const user = verifyAccessToken(token);
-    const url = new URL(req.url);
-    const { page, limit } = validateQuery(paginationSchema)(Object.fromEntries(url.searchParams));
 
     const certs = await db.query.certificates.findMany({
       where: eq(certificates.userId, user.userId),
-      limit: limit,
-      offset: (page - 1) * limit,
     });
 
-    return NextResponse.json({ certificates: certs, page, limit });
+    return NextResponse.json({ certificates: certs });
   } catch (err) {
     return errorHandler(err as Error, req);
   }
 }
 
-// POST /api/v1/certificates - Create certificate
+// POST /api/v1/certificates - Request new certificate
 export async function POST(req: NextRequest) {
   try {
     const rateLimit = standardRateLimiter(req);
@@ -50,33 +60,158 @@ export async function POST(req: NextRequest) {
 
     const user = verifyAccessToken(token);
     const body = await req.json();
-    const data = await validateBody(createCertificateSchema)(body);
 
+    // Validate input
+    let data;
+    try {
+      data = requestCertSchema.parse(body);
+    } catch (e: any) {
+      return NextResponse.json({ error: { code: 'VALIDATION_ERROR', message: e.message } }, { status: 400 });
+    }
+
+    // Verify domain ownership
+    const domain = await db.query.domains.findFirst({
+      where: and(eq(domains.id, data.domainId), eq(domains.userId, user.userId)),
+    });
+
+    if (!domain) {
+      return NextResponse.json({ error: { code: 'NOT_FOUND', message: 'Domain not found' } }, { status: 404 });
+    }
+
+    // Verify provider exists
+    const provider = await db.query.providers.findFirst({
+      where: eq(providers.id, data.providerId),
+    });
+
+    if (!provider) {
+      return NextResponse.json({ error: { code: 'NOT_FOUND', message: 'DNS Provider not found' } }, { status: 404 });
+    }
+
+    // Generate ACME challenge token (for HTTP-01)
+    const challengeToken = uuidv4();
+    
     const certId = uuidv4();
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000); // 90 days
 
+    // Create certificate in "pending" status (waiting for challenge validation)
     await db.insert(certificates).values({
       id: certId,
-      domain: data.domain,
+      domainId: data.domainId,
+      domain: domain.name,
       providerId: data.providerId,
       userId: user.userId,
       caProvider: data.caProvider,
-      status: 'active',
-      expiresAt,
+      challengeType: data.challengeType,
+      status: 'pending',
     });
 
     // Audit log
     await db.insert(userAuditLogs).values({
       id: uuidv4(),
       userId: user.userId,
-      action: 'create_certificate',
+      action: 'request_certificate',
       ipAddress: req.headers.get('x-forwarded-for')?.split(',')[0] || undefined,
       userAgent: req.headers.get('user-agent') || undefined,
-      details: { certificateId: certId, domain: data.domain },
+      details: { certificateId: certId, domain: domain.name, challengeType: data.challengeType },
     });
 
-    return NextResponse.json({ id: certId, domain: data.domain }, { status: 201 });
+    return NextResponse.json({
+      id: certId,
+      domain: domain.name,
+      challengeType: data.challengeType,
+      status: 'pending',
+      challengeToken, // In production, this would be generated by ACME server
+      message: 'Certificate requested. Complete the challenge to activate.',
+    }, { status: 201 });
+  } catch (err) {
+    return errorHandler(err as Error, req);
+  }
+}
+
+// PUT /api/v1/certificates - Update certificate (renew/activate)
+export async function PUT(req: NextRequest) {
+  try {
+    const authHeader = req.headers.get('authorization');
+    const token = authHeader?.replace('Bearer ', '');
+    if (!token) {
+      return NextResponse.json({ error: { code: 'UNAUTHORIZED', message: 'No token' } }, { status: 401 });
+    }
+
+    const user = verifyAccessToken(token);
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get('id');
+    const action = searchParams.get('action');
+
+    if (!id) {
+      return NextResponse.json({ error: { code: 'VALIDATION_ERROR', message: 'Certificate ID required' } }, { status: 400 });
+    }
+
+    // Verify ownership
+    const cert = await db.query.certificates.findFirst({
+      where: and(eq(certificates.id, id), eq(certificates.userId, user.userId)),
+    });
+
+    if (!cert) {
+      return NextResponse.json({ error: { code: 'NOT_FOUND', message: 'Certificate not found' } }, { status: 404 });
+    }
+
+    if (action === 'renew') {
+      // Update status to pending for renewal
+      await db.update(certificates).set({
+        status: 'pending',
+        lastRenewed: new Date(),
+      }).where(eq(certificates.id, id));
+
+      return NextResponse.json({ message: 'Certificate renewal initiated' });
+    }
+
+    if (action === 'activate') {
+      // Mark as active (after challenge completed)
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);
+
+      await db.update(certificates).set({
+        status: 'active',
+        expiresAt,
+      }).where(eq(certificates.id, id));
+
+      return NextResponse.json({ message: 'Certificate activated' });
+    }
+
+    return NextResponse.json({ error: { code: 'NOT_FOUND', message: 'Action not found' } }, { status: 404 });
+  } catch (err) {
+    return errorHandler(err as Error, req);
+  }
+}
+
+// DELETE /api/v1/certificates - Delete certificate
+export async function DELETE(req: NextRequest) {
+  try {
+    const authHeader = req.headers.get('authorization');
+    const token = authHeader?.replace('Bearer ', '');
+    if (!token) {
+      return NextResponse.json({ error: { code: 'UNAUTHORIZED', message: 'No token' } }, { status: 401 });
+    }
+
+    const user = verifyAccessToken(token);
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get('id');
+
+    if (!id) {
+      return NextResponse.json({ error: { code: 'VALIDATION_ERROR', message: 'Certificate ID required' } }, { status: 400 });
+    }
+
+    // Verify ownership
+    const cert = await db.query.certificates.findFirst({
+      where: and(eq(certificates.id, id), eq(certificates.userId, user.userId)),
+    });
+
+    if (!cert) {
+      return NextResponse.json({ error: { code: 'NOT_FOUND', message: 'Certificate not found' } }, { status: 404 });
+    }
+
+    await db.delete(certificates).where(eq(certificates.id, id));
+
+    return NextResponse.json({ success: true });
   } catch (err) {
     return errorHandler(err as Error, req);
   }
