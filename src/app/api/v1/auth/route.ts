@@ -13,8 +13,7 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const url = new URL(req.url);
-    const action = url.pathname.split('/').pop();
+    const action = body.action || 'login';
 
     if (action === 'register') {
       const data = await validateBody(registerSchema)(body);

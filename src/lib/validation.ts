@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ValidationError } from './error-handler';
+import { ValidationError } from '@/middleware/error-handler';
 
 // Helper to validate request body
 export function validateBody<T extends z.ZodSchema>(schema: T) {
@@ -8,7 +8,7 @@ export function validateBody<T extends z.ZodSchema>(schema: T) {
       return await schema.parseAsync(body);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        const details = error.errors.map(e => ({
+        const details = error.issues.map(e => ({
           path: e.path.join('.'),
           message: e.message,
         }));
