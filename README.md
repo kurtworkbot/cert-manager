@@ -1,36 +1,84 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# CertManager - Production ACME Platform
 
-## Getting Started
+A production-ready ACME certificate management platform with multi-DNS provider support, auto-renewal, and monitoring.
 
-First, run the development server:
+## Features
+
+- 🔐 **Authentication** - JWT-based auth with role-based access control (Admin/User/Viewer)
+- 📜 **Certificate Management** - Create, manage, and track SSL/TLS certificates
+- 🔄 **Auto-Renewal** - Automatic certificate renewal before expiration
+- 🌐 **Multi-DNS Provider** - Support for Cloudflare, DuckDNS, Route53, DigitalOcean, GoDaddy
+- 🏢 **Multi-CA** - Let's Encrypt and ZeroSSL support
+- 📊 **Monitoring** - Health checks, metrics, and drift detection
+- 🐳 **Production Ready** - Docker, Docker Compose, GitHub Actions CI/CD
+
+## Quick Start
+
+### Development
 
 ```bash
+# Install dependencies
+npm install
+
+# Run development server
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Visit http://localhost:3000
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Production with Docker
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+# Copy environment file
+cp .env.production .env
 
-## Learn More
+# Edit .env with your values
+vim .env
 
-To learn more about Next.js, take a look at the following resources:
+# Build and run
+docker-compose up -d
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## API Endpoints
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Authentication
 
-## Deploy on Vercel
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | /api/v1/auth | Login or register |
+| POST | /api/v1/auth/refresh | Refresh access token |
+| POST | /api/v1/auth/logout | Logout |
+| GET | /api/v1/auth/me | Get current user |
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+### Certificates
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | /api/v1/certificates | List certificates |
+| POST | /api/v1/certificates | Create certificate |
+
+### Health
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | /api/v1/health | Health check |
+
+## Environment Variables
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| JWT_SECRET | Secret for JWT tokens | Yes |
+| JWT_REFRESH_SECRET | Secret for refresh tokens | Yes |
+| DATABASE_URL | Database connection | No (default: sqlite.db) |
+
+## Tech Stack
+
+- **Framework**: Next.js 16
+- **Database**: SQLite + Drizzle ORM
+- **Auth**: JWT + bcrypt
+- **Validation**: Zod
+- **Testing**: Vitest
+
+## License
+
+MIT
